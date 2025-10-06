@@ -1,0 +1,102 @@
+** Introduction
+This document contains results from our work on the IoT-Growhouse project.
+
+*** General Overview
+Our growhouse is controled by a (or several) microbits, that sends and receives all data to our IoT platform through a Raspberry Pi. There are several other options (modules for the microbit), that will let it 
+\newline
+\newline
+ **The system architecture, mapping all device and their usage, looks the following:**
+ [[./img/iot_growhouse_architecture.png]]
+
+\newpage
+
+** Growhouse
+*** Sensors
+These are the current sensors used to collect and send in data to our IoT platform.
+
+*** Output systems
+
+
+** Micro:bit
+
+[[./img/makecode.png]]
+
+*** Mapping of pins
+Here we show the pins in use and their purpose. The offical mapping for what the pins can be used for, is [[https://makecode.microbit.org/device/pins][found here]].
+
+ - **Relay Pins**
+   - 0: 
+   - 1: 
+   - 2: 
+   - 3: 
+   - 4: 
+   - 5: 
+   - 6: 
+   - 7: 
+
+ - **Pins**
+   - 0: 
+   - 1: 
+   - 2: 
+   - 3: 
+   - 4: 
+   - 5: 
+   - 6: 
+   - 7: 
+   - 8: 
+   - 9: 
+   - 10: 
+   - 11: 
+   - 12: 
+   - 13: 
+   - 14: 
+   - 15: 
+
+
+*** Makecode code 
+Current code running on our gateway microbit.
+
+
+** Raspberry Pi
+
+This device **is optional**, and can be skipped if setting up the the micro:bit to send POST requests through a ESP8226 module. ThingsBoard also have many other integration options, that can be used to connect devices.
+\newline
+\newline
+It is connected to WiFi and running a Node-RED server:
+1. Receive string from microbit
+2. Parse string to JSON
+3. Send JSON to ThingsBoard, using HTTP POST request
+  - URL (includes device token): 
+[[./img/node-RED.png]]
+
+We can add extra functionality to our Node-RED server, that makes it inject the device id given to it by our microbit into the request URL. By doing so we can now use our microbit that is connected to the Raspberry Pi as a gateway for other devices (most likely other microbits). These other microbits can use bluetooth (BT) to send in data to ThingsBoard, through our microbit gateway.
+[[./img/nodeRED_gateway.png]]
+
+** ThingsBoard 
+It is possible to use ThingsBoard (TB)with the free Community Edition (CE) for our project, as we only need to use the HTTP API and not one of the available integrations that come with the Professional edition (PE). To simpliy and speed things up, we are using PE because it makes the ThingsBoard cloud installation available to us; saving us the job of setting up and configuring our own TB server.
+[[./img/tb_subscription.png]]
+
+*** User Administration
+Documentation on how a system administration can create and handle users is [[https://thingsboard.io/docs/user-guide/ui/tenants/][found here]]. In our case we will create a Costumer for each school. Each Costumer have their own set of users, assets, devices, dashboards, and so on. We create on "Tenant Administrator" for each school, that have the authorization to create and do everything needed to fully utilize the ThingsBoard platform. Scripts can be used to automate the creation of costomers, and set up default things we wish them to have at start.
+[[./img/tb_tenant_creation.png]]
+
+Dashboards can be created through the GUI or code. Here are some scripts .... TODO that can be used to quickly set up the default Dashboard for our Growhouse.
+
+*** Connection options
+[[./img/tb_connectivity_options.png]]
+
+*** Data handling & Rule Chain
+[[./img/telemetry_data_processing.png]]
+[[./img/root_rulechain.png]]
+
+*** Device
+We have created one device, that represents the microbit mounted on our IoT-Growhouse. We send all data from the growhouse using a single HTTP POST request. When the request has gone through the Root rule chain, where data from devices gets saved, we can see it on our device. Then we can connect and display values of each key (in the JSON data the device receives) in Dashboard Widgets.
+[[./img/tb_device.png]]
+
+*** Dashboard
+Here is an example dashboard, showing sensor data received from our growhouse:
+[[./img/tb_dashboard.png]]
+
+*** Downlink
+- TODO: We are currently not doing this
+

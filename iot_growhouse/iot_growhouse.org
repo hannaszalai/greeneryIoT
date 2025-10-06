@@ -1,0 +1,662 @@
+#+AUTHOR: IT-Gården
+#+TITLE: IoT-Growhouse
+#+DATE: 18 Januari 2021
+#+LATEX_CLASS: article
+#+LATEX_CLASS_OPTIONS: [a4paper]
+#+OPTIONS: num:nil date:nil
+
+# # Copied (Not fully checked was is needed)
+#+LATEX_HEADER: \usepackage{lmodern}
+#+LATEX_HEADER: \renewcommand*\familydefault{\sfdefault}
+#+LATEX_HEADER: \hypersetup{colorlinks=true,linkcolor=blue}
+#+LATEX_HEADER: \usepackage{ae,aecompl}
+#+LaTeX_HEADER: \linespread{1}
+#+LATEX_HEADER: \usepackage{enumitem}
+#+LaTeX_HEADER: \setlength{\parindent}{0pt}
+#+LaTeX_HEADER: \setlength{\parskip}{0pt}
+#+LaTeX_HEADER: \setlength{\itemsep}{0pt}
+
+* Introduction
+Here we give an overview of all devices and places used within the project.
+
+** General Overview
+**The system architecture, mapping all devices/places and their usage, looks the following:**
+[[./iot_growhouse_architecture.png]]
+
+** Micro:bit code
+[[./makecode.png]]
+
+** Raspberry Pi
+This device **is optional**, and can be skipped if setting up the the micro:bit to send POST requests through a ESP8226 module. ThingsBoard also have many other integration options, that can be used to connect devices.
+\newline
+\newline
+It is connected to WiFi and running a Node-RED server:
+1. Receive string from microbit
+2. Parse string to JSON
+3. Send JSON to ThingsBoard, using HTTP POST request
+  - URL (includes device token): https://thingsboard.cloud/api/v1/ZTs1oZXenTrDFbE5teK3/telemetry
+[[./node-RED.png]]
+
+We can add extra functionality to our Node-RED server, that makes it inject the device id given to it by our microbit into the request URL. By doing so we can now use our microbit that is connected to the Raspberry Pi as a gateway for other devices (most likely other microbits). These other microbits can use bluetooth (BT) to send in data to ThingsBoard, through our microbit gateway.
+[[./nodeRED_gateway.png]]
+
+** ThingsBoard 
+It is possible to use ThingsBoard (TB)with the free Community Edition (CE) for our project, as we only need to use the HTTP API and not one of the available integrations that come with the Professional edition (PE). To simpliy and speed things up, we are using PE because it makes the ThingsBoard cloud installation available to us; saving us the job of setting up and configuring our own TB server.
+[[./tb_subscription.png]]
+
+*** User Administration
+Documentation on how a system administration can create and handle users is [[https://thingsboard.io/docs/user-guide/ui/tenants/][found here]]. In our case we will create a Costumer for each school. Each Costumer have their own set of users, assets, devices, dashboards, and so on. We create on "Tenant Administrator" for each school, that have the authorization to create and do everything needed to fully utilize the ThingsBoard platform. Scripts can be used to automate the creation of costomers, and set up default things we wish them to have at start.
+[[./tb_tenant_creation.png]]
+
+Dashboards can be created through the GUI or code. Here are some example python scripts that can be used to quickly set up the default Dashboard for our Growhouse.
+
+**** Generate a dashboard (from file) using a script
+#+BEGIN_SRC python
+#      Copyright 2020. ThingsBoard
+#  #
+#      Licensed under the Apache License, Version 2.0 (the "License");
+#      you may not use this file except in compliance with the License.
+#      You may obtain a copy of the License at
+#  #
+#          http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#      Unless required by applicable law or agreed to in writing, software
+#      distributed under the License is distributed on an "AS IS" BASIS,
+#      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#      See the License for the specific language governing permissions and
+#      limitations under the License.
+#
+
+import logging
+from json import load
+# Importing models and REST client class from Professional Edition version
+from tb_rest_client.rest_client_pe import *
+from tb_rest_client.rest import ApiException
+
+
+logging.basicConfig(level=logging.DEBUG,
+                    format='%(asctime)s - %(levelname)s - %(module)s - %(lineno)d - %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S')
+
+
+# ThingsBoard REST API URL
+url = "http://localhost:8080"
+
+# Default Tenant Administrator credentials
+username = "tenant@thingsboard.org"
+password = "tenant"
+
+
+# Creating the REST client object with context manager to get auto token refresh
+with RestClientPE(base_url=url) as rest_client:
+    try:
+        # Auth with credentials
+        rest_client.login(username=username, password=password)
+
+        # Getting current user
+        current_user = rest_client.get_user()
+
+        # Creating Dashboard Group on the Tenant Level
+        shared_dashboards_group = EntityGroup(name="Shared Dashboards", type="DASHBOARD")
+        shared_dashboards_group = rest_client.save_entity_group(shared_dashboards_group)
+
+        # Loading Dashboard from file
+        dashboard_json = None
+        with open("watermeters.json", "r") as dashboard_file:
+            dashboard_json = load(dashboard_file)
+        dashboard = Dashboard(title=dashboard_json["title"], configuration=dashboard_json["configuration"])
+        dashboard = rest_client.save_dashboard(dashboard)
+
+        # Adding Dashboard to the Shared Dashboards Group
+        rest_client.add_entities_to_entity_group(shared_dashboards_group.id, [dashboard.id.id])
+
+        # Creating Customer 1
+        customer1 = Customer(title="Customer 1")
+        customer1 = rest_client.save_customer(customer1)
+
+        # Creating Device
+        device = Device(name="WaterMeter1", type="waterMeter")
+        device = rest_client.save_device(device)
+
+        # Fetching automatically created "Customer Administrators" Group.
+        customer1_administrators = rest_client.get_entity_group_info_by_owner_and_name_and_type(customer1.id, "USER", "Customer Administrators")
+
+        # Creating Read-Only Role
+        read_only_role = Role(name="Read-Only", permissions=['READ', 'READ_ATTRIBUTES', 'READ_TELEMETRY', 'READ_CREDENTIALS'], type="GROUP")
+        read_only_role = rest_client.save_role(read_only_role)
+
+        # Assigning Shared Dashboards to the Customer 1 Administrators
+        tenant_id = current_user.tenant_id
+        group_permission = GroupPermission(role_id=read_only_role.id,
+                                           name="Read Only Permission",
+                                           is_public=False,
+                                           user_group_id=customer1_administrators.id,
+                                           tenant_id=tenant_id,
+                                           entity_group_id=shared_dashboards_group.id,
+                                           entity_group_type=shared_dashboards_group.type)
+        group_permission = rest_client.save_group_permission(group_permission)
+
+        # Creating User for Customer 1 with default dashboard from Tenant "Shared Dashboards" group.
+        user_email = "user@thingsboard.org"
+        user_password = "secret"
+        additional_info = {
+            "defaultDashboardId": dashboard.id.id,
+            "defaultDashboardFullscreen": False
+        }
+        user = User(authority="CUSTOMER_USER",
+                    customer_id=customer1.id,
+                    email=user_email,
+                    additional_info=additional_info)
+        user = rest_client.save_user(user, send_activation_mail=False)
+        rest_client.activate_user(user.id, user_password)
+
+        rest_client.add_entities_to_entity_group(customer1_administrators.id, [user.id.id])
+
+    except ApiException as e:
+        logging.exception(e)
+
+#+END_SRC
+
+*** Connection options
+[[./tb_connectivity_options.png]]
+
+*** Data handling & Rule Chain
+[[./telemetry_data_processing.png]]
+[[./root_rulechain.png]]
+
+*** Device
+We have created one device, that represents the microbit mounted on our IoT-Growhouse. We send all data from the growhouse using a single HTTP POST request. When the request has gone through the Root rule chain, where data from devices gets saved, we can see it on our device. Then we can connect and display values of each key (in the JSON data the device receives) in Dashboard Widgets.
+[[./tb_device.png]]
+
+*** Dashboard
+Here is an example dashboard, showing sensor data received from our growhouse:
+[[./tb_dashboard.png]]
+
+*** Downlink
+- TODO: We are currently not doing this
+
+* MakeCode (micro:bit)
+- **Relay Labels**
+  - 0: 
+  - 1: 
+
+- **Pins**
+  - 0: 
+  - 1: 
+  - 2: 
+  - 3: 
+  - 4: 
+  - 5: 
+  - 6: 
+  - 7: 
+  - 8: 
+  - 9: 
+  - 10: 
+  - 11: 
+  - 12: 
+  - 13: 
+  - 14: 
+  - 15: 
+
+#+BEGIN_SRC typescript
+
+
+#+END_SRC
+
+
+#+BEGIN_SRC typescript
+
+
+#+END_SRC
+
+* ThingsBoard                                                      :noexport:
+** Nodes                                                          
+*** change originator
+https://thingsboard.io/docs/user-guide/rule-engine-2-0/transformation-nodes/#change-originator
+
+*** switch
+#+BEGIN_SRC javascript
+function nextRelation(metadata, msg) {
+    if ('temperature' in msg) {
+        return ['temperature'];
+    }
+    if ('humidity' in msg) {
+        return ['humidity'];
+    }
+    if ('light_lvl' in msg) {
+        return ['light_lvl'];
+    }
+    if ('moisture' in msg) {
+        return ['moisture'];
+    }   
+}
+
+return nextRelation(metadata, msg);
+#+END_SRC 
+
+** ThingsBoard Integration
+*** WiFi
+ 1. The ESP8226 WiFi module needs a stronger prower suply (200-300mA), as micro-usb from the micro:bit is to weak (~90mA).
+ 2. We've decided to use microbit serial connection to a Raspberry Pi, that is connected through WiFi and uses Node-RED to parse
+
+*** MakeCode Custom Extension
+ - To be able to connect to what we want, and send the data that we want, we decided it was best to modify an [[https://github.com/alankrantas/pxt-ESP8266_ThingSpeak][existing project for connecting to ThingSpark]].
+
+
+**** ESP8226_ThingsBoard Extension
+ #+BEGIN_SRC typescript
+ /**
+  * Custom blocks
+  */
+ //% color=#0fbc11 icon="\uf1eb"
+ namespace ESP8266_ThingsBoard {
+
+     let wifi_connected: boolean = false
+     let thingsboard_connected: boolean = false
+     let flask_connected: boolean = false
+     let last_upload_successful: boolean = false
+     let toSendStr = ""
+
+     // write AT command with CR+LF ending
+     function sendAT(command: string, wait: number = 0) {
+         serial.writeString(command + "\u000D\u000A")
+         basic.pause(wait)
+     }
+
+     // wait for certain response from ESP8266
+     function waitResponse(): boolean {
+         let serial_str: string = ""
+         let result: boolean = false
+         let time: number = input.runningTime()
+         while (true) {
+             serial_str += serial.readString()
+             if (serial_str.length > 200)
+                 serial_str = serial_str.substr(serial_str.length - 200)
+             if (serial_str.includes("WIFI GOT IP")) {
+                 result = true
+                 break
+             }
+             else if (input.runningTime() - time > 10000) {
+                 break
+             }
+         }
+         return result
+     }
+     /**
+      * Initialize ESP8266 module and connect it to Wifi router
+      */
+     //% block="Initialize ESP8266|RX (Tx of micro:bit) %tx|TX (Rx of micro:bit) %rx|Baud rate %baudrate|Wifi SSID = %ssid|Wifi PW = %pw"
+     //% tx.defl=SerialPin.P0
+     //% rx.defl=SerialPin.P1
+     //% ssid.defl=your_ssid
+     //% pw.defl=your_pw
+     export function connectWifi(tx: SerialPin, rx: SerialPin, baudrate: BaudRate, ssid: string, pw: string) {
+         wifi_connected = false
+         thingsboard_connected = false
+         serial.redirect(
+             tx,
+             rx,
+             baudrate
+         )
+         sendAT("AT+RESTORE", 1000) // restore to factory settings
+         sendAT("AT+CWMODE=1") // set to STA mode
+         sendAT("AT+RST", 1000) // reset
+         sendAT("AT+CWJAP=\"" + ssid + "\",\"" + pw + "\"", 0) // connect to Wifi router
+         wifi_connected = waitResponse()
+         basic.pause(100)
+     }
+
+     // wait for certain response from ESP8266
+     function waitTSResponse(): boolean {
+         let serial_str: string = ""
+         let result: boolean = false
+         let time: number = input.runningTime()
+         while (true) {
+             serial_str += serial.readString()
+             if (serial_str.length > 200)
+                 serial_str = serial_str.substr(serial_str.length - 200)
+             if (serial_str.includes("CONNECT")) {
+                 result = true
+                 break
+             }
+             else if (input.runningTime() - time > 10000) {
+                 break
+             }
+         }
+         return result
+     }
+
+
+     /**
+     * Connect to ThingsBoard
+     */
+     //% block="connect thingsboard"
+     //% write_api_key.defl=your_write_api_key
+     //% subcategory="ThingsBoard" weight=90
+     export function connectThingsBoard() {
+         if (wifi_connected) {
+             thingsboard_connected = false
+             let text = "AT+CIPSTART=\"TCP\",\"demo.thingsboard.io\",80" // ThingsBoard demo server
+             sendAT(text, 0) // connect to website server
+             thingsboard_connected = waitTSResponse()
+             basic.pause(100)
+         }
+     }
+
+     /**
+      * Set data for sending. 
+      */
+     //% block="set data to send ThingsBoard | Write API key = %write_api_key| Data = %data"
+     //% write_api_key.defl=your_write_api_key
+     //% data.defl={temperature:}
+     //% expandableArgumentMode="enabled"
+     //% subcategory="ThingsBoard" weight=85
+     export function setData(write_api_key: string, data: string) {
+         toSendStr = "POST /api/v1/" + write_api_key + "/telemetry HTTP/1.1\n"
+             + "Host: growhouse.it-garden.se\n"
+             + "Cache-Control: no-cache\n"
+             + "Content-Type: application/json\n"
+             + "Content-Length: "+data.length+"\n"
+             + "\n"
+             + data
+     }
+
+     /**
+      * upload data. It would not upload anything if it failed to connect to Wifi or ThingsBoard.
+      */
+     //% block="Upload data to ThingsBoard"
+     //% subcategory="ThingsBoard" weight=80
+     export function uploadData() {
+         if (thingsboard_connected) {
+             last_upload_successful = false
+             sendAT("AT+CIPSEND=" + (toSendStr.length + 2), 100)
+             sendAT(toSendStr, 100) // upload data
+             last_upload_successful = waitUPTSResponse()
+             basic.pause(100)
+         }
+     }
+
+     /**
+      * Connect to Flask proxy server
+      */
+     //% block="connect to Flask proxy server | url = %url | port = %port"
+     //% url.defl=http://192.168.43.100
+     //% port.defl=5000
+     //% subcategory="Flask proxy" weight=90
+     export function connectToProxy(url: string, port: string) {
+         if (wifi_connected) {
+             flask_connected = false
+             let text = "AT+CIPSTART=\"TCP\",\""+url +"\","+port
+             sendAT(text, 0) // connect to website server
+             flask_connected = waitTSResponse()
+             basic.pause(100)
+         }
+     }
+
+     /**
+      * Set data for sending. 
+      */
+     //% block="set data to send to Proxy | Write API key = %write_api_key| Data = %data"
+     //% write_api_key.defl=your_write_api_key
+     //% data.defl={temperature:}
+     //% expandableArgumentMode="enabled"
+     //% subcategory="ThingsBoard" weight=85
+     export function setProxyData(write_api_key: string, data: string) {
+         toSendStr = "POST /api/v1/ HTTP/1.1\n"
+             + "Host: growhouse.it-garden.se\n"
+             + "Cache-Control: no-cache\n"
+             + "Content-Type: application/json\n"
+             + "Content-Length: "+data.length+"\n"
+             + "\n"
+             + write_api_key + "," + data
+     }
+
+     /**
+      * upload data. It would not upload anything if it failed to connect to Wifi or ThingsBoard.
+      */
+     //% block="Upload data to Flask Server"
+     //% subcategory="Flask proxy" weight=80
+     export function uploadDataToProxy() {
+         if (flask_connected) {
+             last_upload_successful = false
+             sendAT("AT+CIPSEND=" + (toSendStr.length + 2), 100)
+             sendAT(toSendStr, 100) // upload data
+             last_upload_successful = waitUPTSResponse()
+             basic.pause(100)
+         } else {
+             basic.showIcon(IconNames.Ghost)
+         }
+     }
+
+     function waitUPTSResponse(): boolean {
+         let serial_str: string = ""
+         let result: boolean = false
+         let time: number = input.runningTime()
+         while (true) {
+             serial_str += serial.readString()
+             if (serial_str.length > 200)
+                 serial_str = serial_str.substr(serial_str.length - 200)
+             if (serial_str.includes("SEND OK")) {
+                 result = true
+                 break
+             }
+             else if (input.runningTime() - time > 10000) {
+                 break
+             }
+         }
+         return result
+     }
+
+
+
+     /**
+     * Wait between uploads
+     */
+     //% block="Wait %delay ms"
+     //% delay.min=0 delay.defl=5000 weight=75
+     export function wait(delay: number) {
+         if (delay > 0) basic.pause(delay)
+     }
+
+     /**
+     * Check if ESP8266 successfully connected to Wifi
+     */
+     //% block="Wifi connected %State" weight=70
+     export function wifiState(state: boolean) {
+         if (wifi_connected == state) {
+             return true
+         }
+         else {
+             return false
+         }
+     }
+
+     /**
+     * Check if ESP8266 successfully connected to ThingsBoard
+     */
+     //% block="ThingBoard connected %State"
+     //% subcategory="ThingsBoard" weight=65
+     export function thingsBoardState(state: boolean) {
+         if (thingsboard_connected == state) {
+             return true
+         }
+         else {
+             return false
+         }
+     }
+
+
+     /**
+     * Check if ESP8266 successfully uploaded data to ThingsBoard
+     */
+     //% block="ThingsBoard Last data upload %State"
+     //% subcategory="ThingsBoard" weight=60
+     export function lastUploadState(state: boolean) {
+         if (last_upload_successful == state) {
+             return true
+         }
+         else {
+             return false
+         }
+
+     }
+ }
+ #+END_SRC
+*** Flask Proxy
+ - Not being sure how to send POST requests with ESP8226 with AT calls from the microbit, we decided to send GET request with data to a local proxy server.
+
+**** TCP & HTTP server code
+ #+BEGIN_SRC python
+ from flask import Flask
+ from flask import request
+
+ app = Flask(__name__)
+
+ def send_data():
+     return "I'll be your proxy baby!"
+
+ def change_attributes():
+     return "Shall do!"
+    
+
+ @app.route("/")
+ def hello():
+     return "Hello World!"
+
+ @app.route("/api/v1/", methods=['GET', 'POST'])
+ def thingsboard_api():
+     if request.method == 'POST':
+         return send_data()
+     else:
+         return change_attributes()
+
+
+ if __name__ == "_main__":
+     app.run()
+
+
+     # if request.method == 'POST':
+     #     return send_data()
+     # else:
+     #     return change_attributes()
+
+ #+END_SRC
+
+
+**** Setting up virtual env
+ #+BEGIN_SRC sh
+ python3 -m venv growhouse
+ source growhouse/bin/activate
+ pip install Flask flask-socketio
+ # get path!
+ export FLASK_APP=<path_to_proxy.py>
+ flask run --host=0.0.0.0
+ #+END_SRC
+** Dashboard Creation
+Dashboards can be created through the GUI or code. Here are some example python scripts that can be used to quickly set up the default Dashboard for our Growhouse.
+*** ThingsBoard Professional Edition (PE)
+#+BEGIN_SRC python
+#      Copyright 2020. ThingsBoard
+#  #
+#      Licensed under the Apache License, Version 2.0 (the "License");
+#      you may not use this file except in compliance with the License.
+#      You may obtain a copy of the License at
+#  #
+#          http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#      Unless required by applicable law or agreed to in writing, software
+#      distributed under the License is distributed on an "AS IS" BASIS,
+#      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#      See the License for the specific language governing permissions and
+#      limitations under the License.
+#
+
+import logging
+from json import load
+# Importing models and REST client class from Professional Edition version
+from tb_rest_client.rest_client_pe import *
+from tb_rest_client.rest import ApiException
+
+
+logging.basicConfig(level=logging.DEBUG,
+                    format='%(asctime)s - %(levelname)s - %(module)s - %(lineno)d - %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S')
+
+
+# ThingsBoard REST API URL
+url = "http://localhost:8080"
+
+# Default Tenant Administrator credentials
+username = "tenant@thingsboard.org"
+password = "tenant"
+
+
+# Creating the REST client object with context manager to get auto token refresh
+with RestClientPE(base_url=url) as rest_client:
+    try:
+        # Auth with credentials
+        rest_client.login(username=username, password=password)
+
+        # Getting current user
+        current_user = rest_client.get_user()
+
+        # Creating Dashboard Group on the Tenant Level
+        shared_dashboards_group = EntityGroup(name="Shared Dashboards", type="DASHBOARD")
+        shared_dashboards_group = rest_client.save_entity_group(shared_dashboards_group)
+
+        # Loading Dashboard from file
+        dashboard_json = None
+        with open("watermeters.json", "r") as dashboard_file:
+            dashboard_json = load(dashboard_file)
+        dashboard = Dashboard(title=dashboard_json["title"], configuration=dashboard_json["configuration"])
+        dashboard = rest_client.save_dashboard(dashboard)
+
+        # Adding Dashboard to the Shared Dashboards Group
+        rest_client.add_entities_to_entity_group(shared_dashboards_group.id, [dashboard.id.id])
+
+        # Creating Customer 1
+        customer1 = Customer(title="Customer 1")
+        customer1 = rest_client.save_customer(customer1)
+
+        # Creating Device
+        device = Device(name="WaterMeter1", type="waterMeter")
+        device = rest_client.save_device(device)
+
+        # Fetching automatically created "Customer Administrators" Group.
+        customer1_administrators = rest_client.get_entity_group_info_by_owner_and_name_and_type(customer1.id, "USER", "Customer Administrators")
+
+        # Creating Read-Only Role
+        read_only_role = Role(name="Read-Only", permissions=['READ', 'READ_ATTRIBUTES', 'READ_TELEMETRY', 'READ_CREDENTIALS'], type="GROUP")
+        read_only_role = rest_client.save_role(read_only_role)
+
+        # Assigning Shared Dashboards to the Customer 1 Administrators
+        tenant_id = current_user.tenant_id
+        group_permission = GroupPermission(role_id=read_only_role.id,
+                                           name="Read Only Permission",
+                                           is_public=False,
+                                           user_group_id=customer1_administrators.id,
+                                           tenant_id=tenant_id,
+                                           entity_group_id=shared_dashboards_group.id,
+                                           entity_group_type=shared_dashboards_group.type)
+        group_permission = rest_client.save_group_permission(group_permission)
+
+        # Creating User for Customer 1 with default dashboard from Tenant "Shared Dashboards" group.
+        user_email = "user@thingsboard.org"
+        user_password = "secret"
+        additional_info = {
+            "defaultDashboardId": dashboard.id.id,
+            "defaultDashboardFullscreen": False
+        }
+        user = User(authority="CUSTOMER_USER",
+                    customer_id=customer1.id,
+                    email=user_email,
+                    additional_info=additional_info)
+        user = rest_client.save_user(user, send_activation_mail=False)
+        rest_client.activate_user(user.id, user_password)
+
+        rest_client.add_entities_to_entity_group(customer1_administrators.id, [user.id.id])
+
+    except ApiException as e:
+        logging.exception(e)
+
+#+END_SRC
